@@ -1,0 +1,95 @@
+name: Mango Studio Build APK & Play Bundle
+
+on:
+  push:
+    branches: [ main, master ]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Gradle Cache
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.gradle/caches
+            ~/.gradle/wrapper
+          key: ${{ runner.os }}-gradle-${{ hashFiles('**/*.gradle*', '**/gradle-wrapper.properties') }}
+          restore-keys: |
+            ${{ runner.os }}-gradle-
+
+      - name: Setup Java 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Setup Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          cache: true
+          channel: stable
+
+      - name: Prepare Android & Google Play Branding
+        run: |
+          if [ ! -f "pubspec.yaml" ]; then
+            flutter create . --platforms=android --org com.mango
+          elif [ ! -d "android" ]; then
+            flutter create . --platforms=android
+          fi
+          if [ -f "CustomAppIcon.png" ]; then
+            for d in android/app/src/main/res/mipmap-* android/app/src/main/res/drawable*; do
+              if [ -d "$d" ] && [ -f "$d/ic_launcher.png" ]; then
+                cp CustomAppIcon.png "$d/ic_launcher.png" || true
+              fi
+            done
+          fi
+          if [ -f "android/app/src/main/AndroidManifest.xml" ]; then
+            sed -i 's/android:label="[^"]*"/android:label="تطبيق مانجو"/g' android/app/src/main/AndroidManifest.xml || true
+          fi
+          if [ -f "android/app/build.gradle" ]; then
+            sed -i 's/applicationId = "[^"]*"/applicationId = "com.mango.app2"/g' android/app/build.gradle || true
+            sed -i 's/applicationId "[^"]*"/applicationId "com.mango.app2"/g' android/app/build.gradle || true
+          fi
+          if [ -f "android/app/build.gradle.kts" ]; then
+            sed -i 's/applicationId = "[^"]*"/applicationId = "com.mango.app2"/g' android/app/build.gradle.kts || true
+          fi
+
+      - name: Get dependencies
+        run: flutter pub get
+
+      - name: Build APK
+        run: flutter build apk --release --build-name=1.0.0 --build-number=1
+
+      - name: Build Google Play Bundle (AAB)
+        run: flutter build appbundle --release --build-name=1.0.0 --build-number=1 || true
+
+      - name: Upload APK Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: app-release
+          path: build/app/outputs/flutter-apk/app-release.apk
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Publish Direct Download Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          cp "build/app/outputs/flutter-apk/app-release.apk" app-release.apk
+          ASSETS="app-release.apk"
+          if [ -f "build/app/outputs/bundle/release/app-release.aab" ]; then
+            cp "build/app/outputs/bundle/release/app-release.aab" app-release.aab
+            ASSETS="app-release.apk app-release.aab"
+          fi
+          gh release delete latest-apk --yes || true
+          git tag -f latest-apk
+          git push origin -f latest-apk
+          gh release create latest-apk $ASSETS --title "تطبيق مانجو v1.0.0" --notes "Built by Mango Studio IDE"
